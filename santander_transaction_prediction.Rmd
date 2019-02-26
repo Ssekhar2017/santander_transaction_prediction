@@ -9,4 +9,191 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+library(tidyverse)
+library(glmnet)
+library(pls)
+```
+
+```{r}
+sntdr_train = read_csv("./data/train.csv")
+sntdr_test = read_csv("./data/test.csv")
+```
+
+Partitioning the data into training and testing
+
+```{r}
+X = sntdr_train %>% select(-ID_code, -target) %>% data.matrix()
+y = sntdr_train$target
+
+set.seed(1)
+train = sample(1:nrow(X), (nrow(X) - nrow(X)/4))
+
+test = (-train)
+y.test = y.train[test]
+```
+
+# Ridge Regression
+
+```{r}
+
+ridge.mod = glmnet(X[train,], y[train], alpha = 0, family = 'binomial', lambda = exp(seq(-10, 10, length = 70)))
+plot(ridge.mod)
+
+```
+
+Cross validation to choose the best lambda
+
+```{r}
+set.seed(1)
+cv.out = cv.glmnet(X[train,], y[train], alpha = 0, family = 'binomial', lambda = exp(seq(-10, 10, length = 70)))
+
+plot(cv.out)
+bestlam.ridge = cv.out$lambda.min
+bestlam.ridge
+```
+
+Predictions 
+
+```{r}
+ridge.pred = rep(0, length(y.test))
+
+ridge.probs = predict(ridge.mod, s = bestlam.ridge, newx = X[test,], type = "response")
+
+ridge.pred[ridge.probs > 0.5] = 1
+  
+#Compute the validation set error, which is the fraction of the observations in the validation set that are #misclassified.
+
+mean(ridge.pred != sntdr_train[test, ]$target)
+```
+
+```{r}
+summary(train)
+```
+
+# The Lasso
+
+```{r}
+
+lasso.mod = glmnet(X[train,], y[train], alpha = 1, family = 'binomial', lambda = exp(seq(-10, 10, length = 70)))
+plot(lasso.mod)
+
+```
+
+Cross validation to choose the best lambda
+
+```{r}
+set.seed(1)
+cv.lasso = cv.glmnet(X[train,], y[train], alpha = 1, family = 'binomial', lambda = exp(seq(-10, 10, length = 70)))
+
+plot(cv.lasso)
+bestlam.lasso = cv.lasso$lambda.min
+bestlam.lasso
+```
+
+Predictions 
+
+```{r}
+lasso.pred = rep(0, length(y.test))
+
+lasso.probs = predict(lasso.mod, s = bestlam.lasso, newx = X[test,], type = "response")
+
+lasso.pred[lasso.probs > 0.5] = 1
+  
+# Compute the validation set error, which is the fraction of the observations in the validation set that are misclassified.
+
+mean(lasso.pred != sntdr_train[test, ]$target)
+```
+
+# Principal component Regression
+
+```{r}
+pcr.fit = pcr(target ~ . -ID_code, data = sntdr_train, subset = train, family = 'binomial', 
+              scale = TRUE, validation = "CV")
+
+validationplot(pcr.fit, val.type = "MSEP")
+
+summary(pcr.fit)
+```
+
+```{r}
+
+pcr.pred = rep(0, length(y.test))
+
+pcr.probs = predict(pcr.fit, X[test,], ncomp = 1, type = 'response') 
+
+pcr.pred[pcr.probs > 0.5] = 1
+
+mean(pcr.pred != sntdr_train[test, ]$target)
+```
+
+# Partial Least Squares 
+
+```{r}
+pls.fit = plsr(target ~ . -ID_code, data = sntdr_train, subset = train, 
+               family = 'binomial', scale = TRUE, validation = "CV") 
+
+summary(pls.fit)
+```
+
+```{r}
+validationplot(pls.fit, val.type = "MSEP")
+```
+
+```{r}
+
+pls.pred = rep(0, length(y.test))
+
+pls.probs = predict(pls.fit, X[test,], ncomp = 2, type = 'response') 
+
+pls.pred[pls.probs > 0.5] = 1
+
+mean(pls.pred != sntdr_train[test, ]$target)
+```
+
+Santander predictions 
+
+```{r}
+sntdr.X = sntdr_test %>% select(-ID_code) %>% data.matrix()
+
+sntdr.pred = rep(0, dim(sntdr.X)[1])
+
+sntdr.probs = predict(lasso.mod, s = bestlam.lasso, newx = sntdr.X, type = "response")
+
+sntdr.pred[sntdr.probs > 0.5] = 1
+```
+
+Submission
+
+```{r}
+santander = tibble(ID_code = sntdr_test$ID_code,
+                   target = (as.vector(sntdr.probs)))
+
+write_csv(santander, path = "./data/santander_prediction.csv")
+# Score 0.860
+```
+
+```{r}
+#Fitting the Naive Bayes model
+Naive_Bayes_Model=naiveBayes(target ~., data= s_df)
+#What does the model say? Print the model summary
+Naive_Bayes_Model
+```
+
+```{r}
+#Prediction on the dataset
+NB_Predictions = predict(Naive_Bayes_Model, newdf, type = 'raw')
+
+```
+
+```{r}
+pred.df = as.tibble(NB_Predictions) %>% mutate(target = if_else(`0` > `1`, `0`, `1`))
+
+submission = tibble(ID_code = sntdr_test$ID_code,
+                    target = pred.df$target)
+
+write_csv(submission, path = "./data/final_submission.csv")
+```
+
+
 
