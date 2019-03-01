@@ -1,0 +1,220 @@
+---
+title: "Untitled"
+author: "Amin Yakubu"
+date: "2/28/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table)
+library(Matrix)
+library(dplyr)
+library(MLmetrics)
+library(lightgbm)
+library(tidyverse)
+```
+
+```{r}
+sntdr_train = read_csv("./data/train.csv")
+sntdr_test = read_csv("./data/test.csv")
+```
+
+Creating a matrix and partitioning my data into train and testing
+
+```{r}
+X = sntdr_train %>% select(-ID_code, -target) %>% data.matrix()
+y = sntdr_train$target
+
+set.seed(25)
+train = sample(1:nrow(X),  nrow(X)/2)
+test = (-train)
+
+X.train = X[train,]
+y.train = y[train]
+
+X.test = X[test,]
+y.test = y[test]
+```
+
+```{r}
+dtrain <- lgb.Dataset(data = X.train,
+                      label = y.train,
+                      free_raw_data = FALSE)
+
+dtest <- lgb.Dataset.create.valid(dtrain, data = X.test, label = y.test)
+```
+
+Using validation set 
+
+```{r}
+valids <- list(train = dtrain, test = dtest)
+```
+
+Searching for the best parameters - Parameter tuning
+
+```{r}
+grid_search <- expand.grid(#Accuracy
+                            max_bin = c(100, 110, 120, 130),
+                           learning_rate = c(0.1, 0.01, 0.02),
+                           num_leaves = c(9,10,11),
+                           max_depth = c(10, 12, 13, 14))
+                           
+                           #Dealing with overfitting
+                           #min_data_in_leaf = c(10, 11),
+                           #min_sum_hessian_in_leaf = c(exp(seq(-6, 7, length = 20))))
+                           
+                           # Regularization
+                           #lambda_l1 = c(exp(seq(-6, 3, length = 10))),
+                           # lambda_l2 = c(exp(seq(-6, 3, length = 10))))
+
+                           #min_gain_to_split = c(0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9))
+                           #boosting_type = c('gbdt', 'gbrt', 'rf', 'random_forest', 'dart', 'goss'))
+                           
+                           # speed
+                           #bagging_fraction = c(0.05, 0.5, 1.0),
+                           #bagging_freq = c(2, 5, 10, 15),
+                           #feature_fraction = c(0.05, 0.5, 1.0))
+```
+
+
+Grid Search 
+
+```{r}
+model <- list()
+perf <- numeric(nrow(grid_search))
+
+for (i in 1:nrow(grid_search)) {
+  model[[i]] <- lgb.train(list( #Accuracy
+                               max_bin = grid_search[i, 'max_bin'],
+                               learning_rate = grid_search[i, 'learning_rate'],
+                               num_leaves = grid_search[i, 'num_leaves'],
+                               max_depth = grid_search[i, "max_depth"],
+                               
+                               # Dealing with overfitting
+                               #min_data_in_leaf = 10, #grid_search[i,"min_data_in_leaf"],
+                               #min_sum_hessian_in_leaf = 1096.633, # grid_search[i, "min_sum_hessian_in_leaf"],
+
+                               #Regularization
+                               #lambda_l1 =  1, #grid_search[i, "lambda_l1"],
+                               #lambda_l2 = 2.718282, # grid_search[i, "lambda_l2"],
+                               
+                               #min_gain_to_split = 0.0, grid_search[i, "min_gain_to_split"],
+                               
+                               
+                               #Speed
+                               #bagging_fraction = 1, # grid_search[i, "bagging_fraction"],
+                               #bagging_freq = 2, # grid_search[i, "bagging_freq"],
+                               #feature_fraction = 0.05), # grid_search[i, "feature_fraction"]),
+                          
+                          metric = "auc",
+                          objective = "binary",
+                          boosting_type = 'gbdt',
+                          is_unbalance = TRUE,
+                          boost_from_average = FALSE),
+                          
+                          dtrain,
+                          nrounds = 100,
+                          valids,
+                          early_stopping_rounds = 50)
+  
+  perf[i] <- max(rbindlist(model[[i]]$record_evals$test$auc))
+}
+
+```
+
+
+Best Parameters
+
+```{r}
+# grid_search
+cat("Model ", which.max(perf), " is highest: ", max(perf), sep = "","\n")
+
+print(grid_search[which.max(perf), ])
+```
+
+
+```{r}
+best.grid = list(objective = "binary",
+                 metric = "auc",
+                 boosting_type = 'gbdt',
+                 is_unbalance = TRUE,
+                 boost_from_average = FALSE, 
+                 max_bin = 63,
+                 learning_rate = 0.01,
+                 num_leaves = 6,
+                 max_depth = 14,
+                 min_data_in_leaf = 45,
+                 min_sum_hessian_in_leaf =  0.000446,
+                 #lambda_l1 = 4.972,
+                 #lambda_l2 = 2.276,
+                 #min_gain_to_split = 0.65,
+                 bagging_fraction = 0.55,
+                 bagging_freq = 5, 
+                 feature_fraction = 0.51,
+                 save_binary = TRUE,
+                 verbose = 0)
+```
+
+# Training
+
+```{r}
+print("Train lightgbm using lgb.train with valids")
+set.seed(28)
+bst <- lgb.train(params = best.grid, 
+                 data = dtrain,
+                 nrounds = 20000,
+                 valids = valids,
+                 early_stopping_rounds = 1000)
+
+best.iter = bst$best_iter
+best.iter
+
+max(rbindlist(bst$record_evals$test$auc))
+
+```
+
+
+```{r}
+lgb.model.cv = lgb.cv(params = best.grid, 
+                      data = dtrain, 
+                      nrounds = 20000, early_stopping_rounds = 1000,
+                      eval = 'auc', verbose = 1, nfold = 10,
+                      stratified = TRUE)
+
+cv.best.iter = lgb.model.cv$best_iter
+cv.best.iter
+
+lgb.model.cv$best_score
+
+```
+
+```{r}
+p <- as.numeric(bst$record_evals$test$auc$eval)
+plot(p) 
+```
+
+# Prediction
+
+```{r}
+pred <- predict(bst, X.test, num_iteration = best.iter)
+
+err <- mean(as.numeric(pred > 0.5) != y.test)
+print(paste("test-error=", err))
+```
+
+Submission
+
+```{r}
+test_matrix = sntdr_test %>% select(-ID_code) %>% data.matrix()
+
+snt_pred <- predict(bst, test_matrix, num_iteration = best.iter)
+submission = tibble(ID_code = sntdr_test$ID_code,
+                    target = snt_pred)
+
+write_csv(submission, path = "./data/final_submission-R.csv")
+```
+
